@@ -12,6 +12,7 @@ import { DnsmosUiController } from './dnsmos/DnsmosUiController.ts';
 import { DnsmosToolController } from './dnsmos/DnsmosToolController.ts';
 import { ClipStudioController } from './clipstudio/ClipStudioController.ts';
 import { AudioEditorController } from './clipstudio/editor/AudioEditorController.ts';
+import { EncodedClipPlayerController } from './clipplayer/EncodedClipPlayerController.ts';
 import { VideoDecoderPlayer } from './video/VideoDecoderPlayer.ts';
 import { SrtpUiController } from './srtp/SrtpUiController.ts';
 import { SrtpKeyRegistry } from './srtp/SrtpKeyRegistry.ts';
@@ -133,6 +134,7 @@ MosUiController.initialize(() => renderLadder());
 DnsmosUiController.init();
 const dnsmosToolController = new DnsmosToolController();
 ClipStudioController.getInstance().init();
+EncodedClipPlayerController.getInstance().init();
 
 // Initialize SRTP / DTLS Key Management & Selective Decryption UI Controller
 const srtpUiController = new SrtpUiController(new SrtpKeyRegistry(), {
@@ -215,6 +217,7 @@ if (btnTabMos && btnTabSnr && btnTabDnsmos && mosPanel && snrPanel && dnsmosPane
 // Tab switching
 document.querySelectorAll('.nav-tab').forEach(tab => {
   tab.addEventListener('click', () => {
+    EncodedClipPlayerController.getInstance().deactivate();
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => (c as HTMLElement).style.display = 'none');
     tab.classList.add('active');
@@ -236,6 +239,17 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
       dropzoneArea.style.display = 'none';
       dashboard.style.display = 'none';
       document.getElementById('tab-clip-studio')!.style.display = 'block';
+      audioPlayer.stop();
+      multiTrackPlayer.pause();
+      playerDock.style.display = 'none';
+      return;
+    }
+
+    if (targetId === 'tab-clip-player') {
+      // Standalone Encoded Clip Player tab: works directly with audio clips, no PCAP required
+      dropzoneArea.style.display = 'none';
+      dashboard.style.display = 'none';
+      document.getElementById('tab-clip-player')!.style.display = 'block';
       audioPlayer.stop();
       multiTrackPlayer.pause();
       playerDock.style.display = 'none';

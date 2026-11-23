@@ -1012,3 +1012,36 @@ canvas#multitrack-canvas {
   color: #2ac3de;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   Encoded Clip Player Styles
+   ───────────────────────────────────────────────────────────────────────── */
+.cp-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(122, 162, 247, 0.25);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: cp-spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+@keyframes cp-spin {
+  to { transform: rotate(360deg); }
+}
+
+.cp-codec-option {
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.cp-codec-option:hover {
+  border-color: var(--accent) !important;
+  background: rgba(122, 162, 247, 0.08) !important;
+}
+
+#cp-dropzone:hover {
+  border-color: var(--accent) !important;
+  background: rgba(122, 162, 247, 0.04) !important;
+}
+
+

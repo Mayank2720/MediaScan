@@ -10,6 +10,7 @@ import { G726Decoder } from '../decoders/G726Decoder.ts';
 import { G729Decoder } from '../decoders/G729Decoder.ts';
 import { AmrDecoder } from '../decoders/AmrDecoder.ts';
 import { OpusDecoder } from '../decoders/OpusDecoder.ts';
+import { EvsDecoder } from '../decoders/EvsDecoder.ts';
 import { WavParser } from './WavParser.ts';
 
 export interface RawPcmOptions {
@@ -45,6 +46,7 @@ export type SupportedRawCodec =
   | 'g729'
   | 'amr-nb'
   | 'amr-wb'
+  | 'evs'
   | 'opus'
   | 'ilbc'
   | 'speex'
@@ -100,6 +102,14 @@ export class RawAudioLoader {
         return 'wav';
       }
     }
+    // EVS MIME container: #!EVS_MC1.0\n
+    if (bytes.length >= 13) {
+      if (bytes[0] === 0x23 && bytes[1] === 0x21 && bytes[2] === 0x45 && bytes[3] === 0x56 &&
+          bytes[4] === 0x53 && bytes[5] === 0x5f && bytes[6] === 0x4d && bytes[7] === 0x43 &&
+          bytes[8] === 0x31 && bytes[9] === 0x2e && bytes[10] === 0x30 && bytes[11] === 0x0a) {
+        return 'evs';
+      }
+    }
 
     // Extension mappings
     switch (ext) {
@@ -125,6 +135,9 @@ export class RawAudioLoader {
       case 'amrwb':
       case 'awb':
         return 'amr-wb';
+      case 'evs':
+      case 'evs_hf':
+        return 'evs';
       case 'opus':
       case 'ogg':
         return 'opus';
@@ -312,6 +325,10 @@ export class RawAudioLoader {
       };
     }
 
+    if (codec === 'evs') {
+      return this.decodeEvsFile(bytes, fileName);
+    }
+
     if (codec === 'pcm') {
       const opts = pcmOptions || {
         sampleRate: 16000,
@@ -456,5 +473,103 @@ export class RawAudioLoader {
       float[i] = pcm[i] / 32768.0;
     }
     return float;
+  }
+
+  /**
+   * Decodes a 3GPP TS 26.445 EVS MIME container or raw EVS bitstream file.
+   */
+  private static async decodeEvsFile(bytes: Uint8Array, fileName: string): Promise<LoadedAudio> {
+    // Check for 3GPP TS 26.445 MIME container magic: #!EVS_MC1.0\n
+    const hasContainerHeader = bytes.length >= 13 &&
+      bytes[0] === 0x23 && bytes[1] === 0x21 && bytes[2] === 0x45 && bytes[3] === 0x56 &&
+      bytes[4] === 0x53 && bytes[5] === 0x5f && bytes[6] === 0x4d && bytes[7] === 0x43 &&
+      bytes[8] === 0x31 && bytes[9] === 0x2e && bytes[10] === 0x30 && bytes[11] === 0x0a;
+
+    let frameData: Uint8Array;
+    let isHeaderFull: boolean;
+
+    if (hasContainerHeader) {
+      // Parse container: magic (12B) + 4B channel count header
+      let offset = 12;
+      if (offset + 4 <= bytes.length) {
+        offset += 4; // skip channel count header
+      }
+      frameData = bytes.slice(offset);
+      isHeaderFull = true; // MIME container uses header-full ToC format
+    } else {
+      // Raw EVS frames — detect format from file extension
+      const ext = fileName.toLowerCase().split('.').pop() || '';
+      isHeaderFull = ext === 'evs_hf';
+      frameData = bytes;
+    }
+
+    // Parse frames: each frame = [1-byte ToC][payload bytes]
+    const payloads: Uint8Array[] = [];
+    let pos = 0;
+
+    while (pos < frameData.length) {
+      const toc = frameData[pos];
+      pos++;
+
+      // Determine frame size from ToC
+      const isAmrWbIo = (toc & 0x20) !== 0;
+      let ft: number;
+      let frameBytes: number;
+
+      if (isAmrWbIo) {
+        ft = (toc >> 4) & 0x0f;
+        if (ft === 14 || ft === 15) ft = toc & 0x0f;
+        frameBytes = EvsDecoder.AMRWB_FRAME_BYTES[ft] || 0;
+      } else {
+        ft = toc & 0x0f;
+        frameBytes = EvsDecoder.EVS_FRAME_BYTES[ft] || 0;
+      }
+
+      if (frameBytes === 0) {
+        // NO_DATA or SID with 0-byte payload — skip
+        if (ft === 15 || ft === 14) {
+          payloads.push(new Uint8Array(0));
+        }
+        continue;
+      }
+
+      if (pos + frameBytes > frameData.length) break;
+      payloads.push(frameData.slice(pos, pos + frameBytes));
+      pos += frameBytes;
+    }
+
+    if (payloads.length === 0) {
+      throw new Error('No valid EVS frames found in file.');
+    }
+
+    // Determine bandwidth from first meaningful frame
+    const firstToc = frameData[0];
+    const isFirstAmrWbIo = (firstToc & 0x20) !== 0;
+    let sampleRate = 16000;
+    let bandLabel = 'WB';
+    if (!isFirstAmrWbIo) {
+      const ftFirst = firstToc & 0x0f;
+      const bits = EvsDecoder.EVS_CORE_BITS[ftFirst];
+      if (bits <= 192) { sampleRate = 8000; bandLabel = 'NB'; }
+      else if (bits <= 328) { sampleRate = 16000; bandLabel = 'WB'; }
+      else { sampleRate = 32000; bandLabel = 'SWB'; }
+    }
+
+    try {
+      const result = await EvsDecoder.decodePayloads(payloads, isHeaderFull, sampleRate);
+      const floatData = this.pcm16ToFloat(result.pcm);
+      return {
+        fileName,
+        codec: 'EVS',
+        formatName: `3GPP EVS ${bandLabel} (${result.sampleRate} Hz mono)`,
+        sampleRate: result.sampleRate,
+        numChannels: 1,
+        channelData: [floatData],
+        durationSec: floatData.length / result.sampleRate,
+        isContainerDecoded: false,
+      };
+    } catch (err) {
+      throw new Error(`EVS decode failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
